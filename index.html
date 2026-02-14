@@ -887,10 +887,16 @@ function render(t) {
   drawMist(t);
   drawFloor(t);
 
-  // Draw portals
+  // Draw portals (fade out during victory alongside orb)
   const room = ROOMS[state.currentRoom];
-  for (const p of room.portals) {
-    drawPortal(p, t);
+  const portalAlpha = (state.phase === STATE.VICTORY)
+    ? Math.max(0, 1 - state.victoryElapsed / 500)
+    : 1;
+  if (portalAlpha > 0) {
+    ctx.save();
+    ctx.globalAlpha = portalAlpha;
+    for (const p of room.portals) drawPortal(p, t);
+    ctx.restore();
   }
 
   // Character (fades out over first 800ms of victory)
