@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>unit : space</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #020a0f;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      box-shadow: 0 0 80px rgba(0, 180, 220, 0.12), 0 0 160px rgba(0, 100, 140, 0.08);
+    }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas" width="800" height="500"></canvas>
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// CONSTANTS
+// ─────────────────────────────────────────────────────────────────────────────
+const CANVAS_W = 800;
+const CANVAS_H = 500;
+const FLOOR_Y  = 435;
+const FLOOR_H  = 65;
+
+const CHAR_NATIVE_W = 137;
+const CHAR_NATIVE_H = 263; // use Walk I/II height as the rendering baseline
+const CHAR_SCALE_SMALL  = 0.55;
+const CHAR_SCALE_NORMAL = 0.72;
+
+const GRAVITY    = 0.52;
+const WALK_SPEED = 3.2;
+
+const FADE_HALF_MS = 200;
+
+// Walk animation cycle: indices into IMAGES array [Default=0, WalkI=1, WalkTrans=2, WalkII=3]
+const WALK_CYCLE     = [1, 2, 3, 2];
+const WALK_CYCLE_DUR = [120, 110, 110, 110]; // ms per frame
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STATE ENUM
+// ─────────────────────────────────────────────────────────────────────────────
+const STATE = { LOADING: 0, PLAYING: 1, FALLING: 2, FADING: 3, VICTORY: 4 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROOM DEFINITIONS
+// ─────────────────────────────────────────────────────────────────────────────
+// Portal types: 'wall_right', 'wall_left', 'ground', 'ceiling_spawn_only'
+const ROOMS = [
+  // ── Room 0 ── Start room: one portal on right wall ──────────────────────
+  {
+    id: 0,
+    bgTint: null,
+    portals: [
+      { type:'wall_right', x:782, y:310, rx:18, ry:58,
+        targetRoom:1, targetSpawnType:'ceiling', targetSpawnX:400 }
+    ],
+    spawnType: 'floor_left', spawnX: 140,
+    charScale: CHAR_SCALE_SMALL
+  },
+
+  // ── Room 1 ── Three portals: ceiling (spawn-only), left→Room3, right→Room2 ─
+  {
+    id: 1,
+    bgTint: { h:200, s:55, l:14, a:0.08 },
+    portals: [
+      { type:'ceiling_spawn_only', x:400, y:20, rx:52, ry:16,
+        targetRoom:null, targetSpawnType:null, targetSpawnX:null },
+      { type:'wall_left',  x:18,  y:310, rx:18, ry:58,
+        targetRoom:3, targetSpawnType:'wall_right_emerge', targetSpawnX:764 },
+      { type:'wall_right', x:782, y:310, rx:18, ry:58,
+        targetRoom:2, targetSpawnType:'wall_left_emerge',  targetSpawnX:36  }
+    ],
+    spawnType: 'ceiling', spawnX: 400,
+    charScale: CHAR_SCALE_NORMAL
+  },
+
+  // ── Room 2 ── Dead end: one portal on left wall ──────────────────────────
+  {
+    id: 2,
+    bgTint: { h:210, s:50, l:12, a:0.12 },
+    portals: [
+      { type:'wall_left', x:18, y:310, rx:18, ry:58,
+        targetRoom:1, targetSpawnType:'wall_right_emerge', targetSpawnX:764 }
+    ],
+    spawnType: 'wall_left_emerge', spawnX: 36,
+    charScale: CHAR_SCALE_NORMAL
+  },
+
+  // ── Room 3 ── Two portals: right (back to Room1), left→Room4 ────────────
+  {
+    id: 3,
+    bgTint: { h:185, s:58, l:15, a:0.10 },
+    portals: [
+      { type:'wall_right', x:782, y:310, rx:18, ry:58,
+        targetRoom:1, targetSpawnType:'wall_left_emerge', targetSpawnX:36  },
+      { type:'wall_left',  x:18,  y:310, rx:18, ry:58,
+        targetRoom:4, targetSpawnType:'wall_right_emerge', targetSpawnX:764 }
+    ],
+    spawnType: 'wall_right_emerge', spawnX: 764,
+    charScale: CHAR_SCALE_NORMAL
+  },
+
+  // ── Room 4 ── Two portals: right (back to Room3), ground→Room5 ──────────
+  {
+    id: 4,
+    bgTint: { h:175, s:52, l:13, a:0.09 },
+    portals: [
+      { type:'wall_right', x:782, y:310, rx:18, ry:58,
+        targetRoom:3, targetSpawnType:'wall_left_emerge', targetSpawnX:36  },
+      { type:'ground',     x:120, y:432, rx:52, ry:16,
+        targetRoom:5, targetSpawnType:'ceiling', targetSpawnX:660 }
+    ],
+    spawnType: 'wall_right_emerge', spawnX: 764,
+    charScale: CHAR_SCALE_NORMAL
+  },
+
+  // ── Room 5 ── Final: ceiling spawn-only portal + orb ────────────────────
+  {
+    id: 5,
+    bgTint: { h:190, s:65, l:16, a:0.14 },
+    portals: [
+      { type:'ceiling_spawn_only', x:660, y:20, rx:52, ry:16,
+        targetRoom:null, targetSpawnType:null, targetSpawnX:null }
+    ],
+    orb: { x:160, baseY:282, r:28, floatAmp:12, floatFreq:0.0018 },
+    spawnType: 'ceiling', spawnX: 660,
+    charScale: CHAR_SCALE_NORMAL
+  }
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CANVAS & CONTEXT
+// ─────────────────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('gameCanvas');
+const ctx    = canvas.getContext('2d');
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IMAGE LOADING
+// ─────────────────────────────────────────────────────────────────────────────
+const SVG_PATHS = [
+  'Prototype I_Default.svg',
+  'Prototype I_Walk I.svg',
+  'Prototype I_Walk Transition.svg',
+  'Prototype I_Walk II.svg'
+];
+const IMAGES = SVG_PATHS.map(src => {
+  const img = new Image();
+  img.src = src;
+  return img;
+});
+
+let loadedCount = 0;
+IMAGES.forEach(img => {
+  img.onload = () => { loadedCount++; if (loadedCount === IMAGES.length) initGame(); };
+  img.onerror = () => { loadedCount++; if (loadedCount === IMAGES.length) initGame(); };
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GAME STATE
+// ─────────────────────────────────────────────────────────────────────────────
+let state = {};
+
+function makeInitialState() {
+  return {
+    phase: STATE.LOADING,
+    currentRoom: 0,
+    char: {
+      x: 0, y: 0, vx: 0, vy: 0,
+      onGround: false, facingRight: true,
+      scale: CHAR_SCALE_SMALL,
+      animFrame: 0,
+      animTimer: 0,
+      walkCycleIdx: 0,
+      isWalking: false
+    },
+    keys: { left: false, right: false },
+    fade: {
+      active: false, alpha: 0, direction: 'out', elapsed: 0,
+      halfDuration: FADE_HALF_MS,
+      pendingRoom: null, pendingSpawnType: null, pendingSpawnX: null
+    },
+    victoryAlpha: 0,
+    orbTouched: false,
+    orbHue: 0,
+    lastTimestamp: 0,
+    totalElapsed: 0
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INPUT
+// ─────────────────────────────────────────────────────────────────────────────
+window.addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft')  state.keys.left  = true;
+  if (e.key === 'ArrowRight') state.keys.right = true;
+  if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) e.preventDefault();
+  if (state.phase === STATE.VICTORY) restartGame();
+});
+window.addEventListener('keyup', e => {
+  if (e.key === 'ArrowLeft')  state.keys.left  = false;
+  if (e.key === 'ArrowRight') state.keys.right = false;
+});
+canvas.addEventListener('click', () => {
+  if (state.phase === STATE.VICTORY) restartGame();
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SPAWN / ROOM SWITCH
+// ─────────────────────────────────────────────────────────────────────────────
+function spawnCharacter(roomId, spawnType, spawnX) {
+  const room   = ROOMS[roomId];
+  const char   = state.char;
+  char.scale   = room.charScale;
+  const cw     = CHAR_NATIVE_W * char.scale;
+  const ch     = CHAR_NATIVE_H * char.scale;
+
+  char.vx = 0; char.vy = 0;
+  char.isWalking    = false;
+  char.animFrame    = 0;
+  char.animTimer    = 0;
+  char.walkCycleIdx = 0;
+
+  switch (spawnType) {
+    case 'floor_left':
+      char.x = spawnX - cw / 2;
+      char.y = FLOOR_Y - ch;
+      char.facingRight = true;
+      char.onGround    = true;
+      state.phase = STATE.PLAYING;
+      break;
+
+    case 'ceiling':
+      char.x = spawnX - cw / 2;
+      char.y = 36 - ch * 0.1; // just below ceiling portal
+      char.vy = 2;
+      char.onGround = false;
+      char.facingRight = true;
+      state.phase = STATE.FALLING;
+      break;
+
+    case 'wall_left_emerge':
+      // emerges from left wall, walks right
+      char.x = spawnX;
+      char.y = FLOOR_Y - ch;
+      char.facingRight = true;
+      char.onGround    = true;
+      state.phase = STATE.PLAYING;
+      break;
+
+    case 'wall_right_emerge':
+      // emerges from right wall, faces left
+      char.x = spawnX - cw;
+      char.y = FLOOR_Y - ch;
+      char.facingRight = false;
+      char.onGround    = true;
+      state.phase = STATE.PLAYING;
+      break;
+  }
+}
+
+function switchRoom(roomId, spawnType, spawnX) {
+  state.currentRoom = roomId;
+  state.orbTouched  = (roomId !== 5) ? false : state.orbTouched;
+  spawnCharacter(roomId, spawnType, spawnX);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PORTAL TRANSITION
+// ─────────────────────────────────────────────────────────────────────────────
+function beginTransition(portal) {
+  state.phase = STATE.FADING;
+  state.fade  = {
+    active: true, alpha: 0, direction: 'out', elapsed: 0,
+    halfDuration: FADE_HALF_MS,
+    pendingRoom: portal.targetRoom,
+    pendingSpawnType: portal.targetSpawnType,
+    pendingSpawnX: portal.targetSpawnX
+  };
+  state.char.vx = 0;
+  state.char.vy = 0;
+  state.keys.left  = false;
+  state.keys.right = false;
+}
+
+function updateFade(dt) {
+  const f = state.fade;
+  f.elapsed += dt;
+
+  if (f.direction === 'out') {
+    f.alpha = Math.min(1, f.elapsed / f.halfDuration);
+    if (f.elapsed >= f.halfDuration) {
+      // Peak darkness — switch room
+      switchRoom(f.pendingRoom, f.pendingSpawnType, f.pendingSpawnX);
+      // Override phase so FADING continues
+      const nextPhase = state.phase;
+      state.phase   = STATE.FADING;
+      f.direction   = 'in';
+      f.elapsed     = 0;
+      f._nextPhase  = nextPhase; // preserve PLAYING or FALLING
+    }
+  } else {
+    f.alpha = 1 - Math.min(1, f.elapsed / f.halfDuration);
+    if (f.elapsed >= f.halfDuration) {
+      f.active     = false;
+      f.alpha      = 0;
+      state.phase  = f._nextPhase || STATE.PLAYING;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COLLISION HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+function checkPortalCollisions() {
+  const room  = ROOMS[state.currentRoom];
+  const char  = state.char;
+  const cw    = CHAR_NATIVE_W * char.scale;
+  const ch    = CHAR_NATIVE_H * char.scale;
+  const cLeft = char.x;
+  const cRight= char.x + cw;
+  const cTop  = char.y;
+  const cBot  = char.y + ch;
+  const cCX   = char.x + cw / 2;
+
+  for (const p of room.portals) {
+    if (p.type === 'ceiling_spawn_only') continue;
+
+    let triggered = false;
+
+    if (p.type === 'wall_right') {
+      triggered = cRight >= (p.x - p.rx)
+               && cBot   >= (p.y - p.ry)
+               && cTop   <= (p.y + p.ry);
+    } else if (p.type === 'wall_left') {
+      triggered = cLeft <= (p.x + p.rx)
+               && cBot  >= (p.y - p.ry)
+               && cTop  <= (p.y + p.ry);
+    } else if (p.type === 'ground') {
+      triggered = Math.abs(cCX - p.x) < p.rx * 0.9
+               && cBot >= FLOOR_Y - 4;
+    }
+
+    if (triggered) {
+      beginTransition(p);
+      return;
+    }
+  }
+}
+
+function checkOrbCollision() {
+  if (state.orbTouched) return;
+  const room = ROOMS[5];
+  if (!room.orb) return;
+  const orb   = room.orb;
+  const orbCY = orb.baseY + Math.sin(state.totalElapsed * orb.floatFreq) * orb.floatAmp;
+  const char  = state.char;
+  const cw    = CHAR_NATIVE_W * char.scale;
+  const ch    = CHAR_NATIVE_H * char.scale;
+  const cCX   = char.x + cw / 2;
+  const cCY   = char.y + ch / 2;
+  const dx    = cCX - orb.x;
+  const dy    = cCY - orbCY;
+  const dist  = Math.sqrt(dx * dx + dy * dy);
+  if (dist < orb.r + cw * 0.45) {
+    state.orbTouched  = true;
+    state.phase       = STATE.VICTORY;
+    state.victoryAlpha = 0;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UPDATE
+// ─────────────────────────────────────────────────────────────────────────────
+function update(dt) {
+  // Always cycle orb hue and elapsed
+  state.totalElapsed += dt;
+  state.orbHue = (state.orbHue + dt * 0.035) % 360;
+
+  if (state.phase === STATE.FADING) {
+    updateFade(dt);
+    return;
+  }
+
+  if (state.phase === STATE.VICTORY) {
+    state.victoryAlpha = Math.min(1, state.victoryAlpha + dt / 700);
+    return;
+  }
+
+  const char = state.char;
+  const norm = dt / 16.667; // normalise to 60fps
+
+  // Horizontal input (only in PLAYING, not FALLING)
+  if (state.phase === STATE.PLAYING) {
+    const goLeft  = state.keys.left  && !state.keys.right;
+    const goRight = state.keys.right && !state.keys.left;
+    if (goLeft)  { char.vx = -WALK_SPEED; char.facingRight = false; char.isWalking = true; }
+    else if (goRight) { char.vx = WALK_SPEED; char.facingRight = true;  char.isWalking = true; }
+    else         { char.vx = 0; char.isWalking = false; }
+  } else {
+    char.vx = 0;
+    char.isWalking = false;
+  }
+
+  // Gravity
+  char.vy += GRAVITY * norm;
+
+  // Position
+  char.x += char.vx * norm;
+  char.y += char.vy * norm;
+
+  // Floor collision
+  const ch = CHAR_NATIVE_H * char.scale;
+  const cw = CHAR_NATIVE_W * char.scale;
+  if (char.y + ch >= FLOOR_Y) {
+    char.y       = FLOOR_Y - ch;
+    char.vy      = 0;
+    char.onGround = true;
+    if (state.phase === STATE.FALLING) state.phase = STATE.PLAYING;
+  } else {
+    char.onGround = false;
+  }
+
+  // Wall clamping (prevent going off screen when no portal there)
+  const room = ROOMS[state.currentRoom];
+  const hasPortalLeft  = room.portals.some(p => p.type === 'wall_left');
+  const hasPortalRight = room.portals.some(p => p.type === 'wall_right');
+  const hasPortalGround= room.portals.some(p => p.type === 'ground');
+
+  if (!hasPortalLeft  && char.x < 0)             { char.x = 0;              char.vx = 0; }
+  if (!hasPortalRight && char.x + cw > CANVAS_W) { char.x = CANVAS_W - cw; char.vx = 0; }
+
+  // Animation update
+  updateAnimation(dt);
+
+  // Portal + orb checks (only while playing, on ground)
+  if (state.phase === STATE.PLAYING) {
+    checkPortalCollisions();
+    if (state.currentRoom === 5) checkOrbCollision();
+  }
+}
+
+function updateAnimation(dt) {
+  const char = state.char;
+  if (char.isWalking) {
+    char.animTimer += dt;
+    const dur = WALK_CYCLE_DUR[char.walkCycleIdx];
+    if (char.animTimer >= dur) {
+      char.animTimer -= dur;
+      char.walkCycleIdx = (char.walkCycleIdx + 1) % WALK_CYCLE.length;
+    }
+    char.animFrame = WALK_CYCLE[char.walkCycleIdx];
+  } else {
+    char.animFrame    = 0;
+    char.animTimer    = 0;
+    char.walkCycleIdx = 0;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RENDERING
+// ─────────────────────────────────────────────────────────────────────────────
+
+// --- Background ---
+function drawBackground(t) {
+  const room = ROOMS[state.currentRoom];
+
+  // Base gradient
+  const bg = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
+  bg.addColorStop(0,    '#07131c');
+  bg.addColorStop(0.35, '#0b1f2e');
+  bg.addColorStop(0.72, '#091a28');
+  bg.addColorStop(1,    '#040d14');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+  // Per-room tint overlay
+  if (room.bgTint) {
+    ctx.save();
+    ctx.globalAlpha = room.bgTint.a;
+    ctx.fillStyle   = `hsl(${room.bgTint.h},${room.bgTint.s}%,${room.bgTint.l}%)`;
+    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    ctx.restore();
+  }
+}
+
+// --- Glass panel architecture ---
+function drawGlassPanels(t) {
+  // Nested framed panels for depth (like Reference VIII)
+  const panels = [
+    { x:55,  y:38,  w:690, h:362, stroke:'rgba(100,200,230,0.06)', lw:2,   fill:'rgba(8,50,75,0.04)'  },
+    { x:135, y:88,  w:530, h:272, stroke:'rgba(110,210,235,0.08)', lw:1.5, fill:'rgba(8,55,80,0.04)'  },
+    { x:215, y:138, w:370, h:192, stroke:'rgba(120,215,240,0.10)', lw:1,   fill:'rgba(10,60,90,0.05)' }
+  ];
+
+  for (const p of panels) {
+    ctx.save();
+    ctx.strokeStyle = p.stroke;
+    ctx.lineWidth   = p.lw;
+    ctx.fillStyle   = p.fill;
+    ctx.fillRect(p.x, p.y, p.w, p.h);
+    ctx.strokeRect(p.x, p.y, p.w, p.h);
+
+    // Inner glow on panel edges
+    ctx.shadowColor = 'rgba(80,180,220,0.3)';
+    ctx.shadowBlur  = 6;
+    ctx.strokeRect(p.x, p.y, p.w, p.h);
+    ctx.shadowBlur  = 0;
+    ctx.restore();
+  }
+
+  // Vertical pillar accents (left and right of main panel)
+  const pillars = [
+    { x:55, y:38, w:12, h:362 },
+    { x:733, y:38, w:12, h:362 }
+  ];
+  for (const pl of pillars) {
+    const pg = ctx.createLinearGradient(pl.x, 0, pl.x + pl.w, 0);
+    const dir = pl.x < 400 ? 1 : -1;
+    if (dir > 0) {
+      pg.addColorStop(0,   'rgba(70,160,210,0.12)');
+      pg.addColorStop(1,   'rgba(70,160,210,0)');
+    } else {
+      pg.addColorStop(0,   'rgba(70,160,210,0)');
+      pg.addColorStop(1,   'rgba(70,160,210,0.12)');
+    }
+    ctx.fillStyle = pg;
+    ctx.fillRect(pl.x, pl.y, pl.w, pl.h);
+  }
+
+  // Glass sheen — diagonal highlight stripe (subtle, like frosted glass)
+  ctx.save();
+  ctx.globalAlpha = 0.025;
+  const sheen = ctx.createLinearGradient(0, 0, CANVAS_W, CANVAS_H);
+  sheen.addColorStop(0,   'rgba(255,255,255,0)');
+  sheen.addColorStop(0.38,'rgba(255,255,255,1)');
+  sheen.addColorStop(0.42,'rgba(255,255,255,0)');
+  sheen.addColorStop(1,   'rgba(255,255,255,0)');
+  ctx.fillStyle = sheen;
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+  ctx.restore();
+}
+
+// --- Atmospheric mist ---
+function drawMist(t) {
+  const drift = Math.sin(t * 0.0003) * 28;
+
+  // Primary mist band
+  const mg = ctx.createLinearGradient(0, FLOOR_Y - 90, 0, FLOOR_Y + 20);
+  mg.addColorStop(0,   'rgba(35,130,175,0)');
+  mg.addColorStop(0.5, 'rgba(35,130,175,0.07)');
+  mg.addColorStop(1,   'rgba(55,155,200,0.13)');
+  ctx.fillStyle = mg;
+  ctx.fillRect(0, FLOOR_Y - 90, CANVAS_W, 110);
+
+  // Secondary drifting mist
+  ctx.save();
+  ctx.globalAlpha = 0.5;
+  const mg2 = ctx.createLinearGradient(drift, FLOOR_Y - 60, drift, FLOOR_Y + 15);
+  mg2.addColorStop(0, 'rgba(50,150,190,0)');
+  mg2.addColorStop(1, 'rgba(50,150,190,0.09)');
+  ctx.fillStyle = mg2;
+  ctx.fillRect(drift, FLOOR_Y - 60, CANVAS_W, 75);
+  ctx.restore();
+}
+
+// --- Floor ---
+function drawFloor(t) {
+  const fg = ctx.createLinearGradient(0, FLOOR_Y, 0, CANVAS_H);
+  fg.addColorStop(0, '#0d2030');
+  fg.addColorStop(1, '#050f18');
+  ctx.fillStyle = fg;
+  ctx.fillRect(0, FLOOR_Y, CANVAS_W, FLOOR_H);
+
+  // Tile grid lines
+  ctx.save();
+  ctx.globalAlpha = 0.10;
+  ctx.strokeStyle = 'rgba(80,160,200,1)';
+  ctx.lineWidth   = 0.8;
+
+  // Horizontal tiles
+  for (const hy of [FLOOR_Y + 10, FLOOR_Y + 25, FLOOR_Y + 42]) {
+    ctx.beginPath(); ctx.moveTo(0, hy); ctx.lineTo(CANVAS_W, hy); ctx.stroke();
+  }
+  // Vertical tiles
+  for (let vx = 0; vx <= CANVAS_W; vx += 80) {
+    ctx.beginPath(); ctx.moveTo(vx, FLOOR_Y); ctx.lineTo(vx, CANVAS_H); ctx.stroke();
+  }
+  ctx.restore();
+
+  // Floor top edge highlight
+  ctx.save();
+  ctx.strokeStyle = 'rgba(100,210,245,0.22)';
+  ctx.lineWidth   = 1;
+  ctx.shadowColor = 'rgba(80,200,240,0.5)';
+  ctx.shadowBlur  = 6;
+  ctx.beginPath(); ctx.moveTo(0, FLOOR_Y); ctx.lineTo(CANVAS_W, FLOOR_Y); ctx.stroke();
+  ctx.shadowBlur  = 0;
+  ctx.restore();
+}
+
+// --- Portal ---
+function drawPortal(p, t) {
+  const cx  = p.x;
+  const cy  = p.y;
+  const rx  = p.rx;
+  const ry  = p.ry;
+  const pulse = 1 + Math.sin(t * 0.0014) * 0.055;
+
+  ctx.save();
+
+  // Outer glow halo
+  ctx.shadowColor = 'rgba(0,200,255,0.85)';
+  ctx.shadowBlur  = 34;
+  ctx.strokeStyle = 'rgba(0,220,255,0.50)';
+  ctx.lineWidth   = 5;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rx * pulse * 1.4, ry * pulse * 1.4, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.shadowBlur  = 0;
+
+  // Mid glow ring
+  ctx.shadowColor = 'rgba(60,220,255,0.9)';
+  ctx.shadowBlur  = 18;
+  ctx.strokeStyle = 'rgba(80,230,255,0.75)';
+  ctx.lineWidth   = 3;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rx * pulse * 1.1, ry * pulse * 1.1, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Inner bright ring
+  ctx.strokeStyle = 'rgba(170,245,255,0.95)';
+  ctx.lineWidth   = 2;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rx * pulse, ry * pulse, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.shadowBlur  = 0;
+
+  // Innermost thin ring
+  ctx.strokeStyle = 'rgba(220,252,255,0.35)';
+  ctx.lineWidth   = 1;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rx * pulse * 0.68, ry * pulse * 0.68, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Portal interior fill — subtle inner glow
+  const ig = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(rx, ry) * pulse);
+  ig.addColorStop(0,   'rgba(0,180,255,0.14)');
+  ig.addColorStop(0.6, 'rgba(0,150,220,0.07)');
+  ig.addColorStop(1,   'rgba(0,100,180,0)');
+  ctx.fillStyle = ig;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rx * pulse, ry * pulse, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Light rays — vertical lines through portal
+  const isHoriz = rx > ry; // ceiling/ground portals are horizontal
+  const rayCount = isHoriz ? 9 : 11;
+  for (let i = 0; i < rayCount; i++) {
+    const frac = (i / (rayCount - 1)) - 0.5;
+    let rayX, rayY1, rayY2;
+    const flicker = 0.10 + Math.sin(t * 0.002 + i * 0.75) * 0.06;
+    const rayLen  = 38 + Math.sin(t * 0.0026 + i * 1.2) * 14;
+
+    if (isHoriz) {
+      // Ground/ceiling portal: rays spread across horizontal axis
+      rayX = cx + frac * rx * 1.7;
+      const yDir = (p.type === 'ground') ? -1 : 1;
+      rayY1 = cy;
+      rayY2 = cy + yDir * rayLen;
+    } else {
+      // Wall portal: rays spread vertically, emanate horizontally
+      rayX = cx;
+      const xDir = (p.type === 'wall_left') ? -1 : 1;
+      // Actually for wall portals draw vertical rays upward from portal center
+      rayX  = cx + frac * rx * 1.7;
+      rayY1 = cy;
+      rayY2 = cy - rayLen;
+    }
+
+    const rg = ctx.createLinearGradient(rayX, rayY1, rayX, rayY2);
+    rg.addColorStop(0, `rgba(80,220,255,${flicker})`);
+    rg.addColorStop(1, 'rgba(80,220,255,0)');
+    ctx.strokeStyle = rg;
+    ctx.lineWidth   = 0.9;
+    ctx.beginPath(); ctx.moveTo(rayX, rayY1); ctx.lineTo(rayX, rayY2); ctx.stroke();
+  }
+
+  // Sparkles
+  const sparks = [
+    {dx:-0.55, dy:-0.45}, {dx:0.3, dy:-0.78},
+    {dx:-0.2,  dy: 0.55}, {dx:0.68, dy:-0.15}
+  ];
+  for (const sp of sparks) {
+    const alpha = ((Math.sin(t * 0.003 + sp.dx * 9) + 1) / 2) * 0.75;
+    const sr    = ((Math.sin(t * 0.0038 + sp.dy * 7) + 1) / 2) * 2.2 + 0.5;
+    ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+    ctx.beginPath();
+    ctx.arc(cx + sp.dx * rx * pulse, cy + sp.dy * ry * pulse, sr, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+// --- Character ---
+function drawCharacter(t) {
+  const char = state.char;
+  const img  = IMAGES[char.animFrame];
+  if (!img || !img.complete) return;
+
+  const cw = CHAR_NATIVE_W * char.scale;
+  const ch = CHAR_NATIVE_H * char.scale;
+
+  ctx.save();
+  if (!char.facingRight) {
+    ctx.translate(char.x + cw, char.y);
+    ctx.scale(-1, 1);
+    ctx.drawImage(img, 0, 0, cw, ch);
+  } else {
+    ctx.drawImage(img, char.x, char.y, cw, ch);
+  }
+  ctx.restore();
+}
+
+// --- Orb ---
+function drawOrb(t) {
+  const room = ROOMS[state.currentRoom];
+  if (!room.orb || state.orbTouched) return;
+  const orb   = room.orb;
+  const cx    = orb.x;
+  const cy    = orb.baseY + Math.sin(t * orb.floatFreq) * orb.floatAmp;
+  const r     = orb.r;
+  const hue   = state.orbHue;
+
+  // Outer ambient glow
+  ctx.save();
+  const ag = ctx.createRadialGradient(cx, cy, r * 0.4, cx, cy, r * 2.8);
+  ag.addColorStop(0,   `hsla(${hue},90%,68%,0.32)`);
+  ag.addColorStop(0.6, `hsla(${hue},80%,55%,0.12)`);
+  ag.addColorStop(1,   `hsla(${hue},70%,50%,0)`);
+  ctx.fillStyle = ag;
+  ctx.beginPath(); ctx.arc(cx, cy, r * 2.8, 0, Math.PI * 2); ctx.fill();
+
+  // Sphere gradient
+  const hx = cx - r * 0.28;
+  const hy = cy - r * 0.32;
+  const sg = ctx.createRadialGradient(hx, hy, r * 0.04, cx, cy, r);
+  sg.addColorStop(0,    `hsla(${(hue+40)%360},100%,96%,1)`);
+  sg.addColorStop(0.32, `hsla(${hue},90%,72%,1)`);
+  sg.addColorStop(0.70, `hsla(${(hue+200)%360},70%,38%,1)`);
+  sg.addColorStop(1,    `hsla(${(hue+180)%360},60%,18%,1)`);
+  ctx.fillStyle = sg;
+  ctx.shadowColor = `hsla(${hue},90%,65%,0.9)`;
+  ctx.shadowBlur  = 22;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+  ctx.shadowBlur  = 0;
+
+  // Specular highlight
+  ctx.fillStyle = 'rgba(255,255,255,0.62)';
+  ctx.beginPath(); ctx.arc(hx, hy, r * 0.17, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+// --- Fade overlay ---
+function drawFade() {
+  if (state.fade.alpha <= 0) return;
+  ctx.fillStyle = `rgba(0,0,0,${state.fade.alpha})`;
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+}
+
+// --- Victory screen ---
+function drawVictory(t) {
+  if (state.phase !== STATE.VICTORY) return;
+  const a  = state.victoryAlpha;
+  const cx = CANVAS_W / 2;
+  const my = CANVAS_H / 2;
+
+  // Dark overlay
+  ctx.fillStyle = `rgba(0,0,0,${a * 0.84})`;
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.textAlign   = 'center';
+  ctx.textBaseline= 'middle';
+
+  // Line 1: LIFE OBTAINED
+  ctx.font        = 'bold 44px "Space Mono", monospace';
+  ctx.fillStyle   = '#e8f8ff';
+  ctx.shadowColor = 'rgba(0,210,255,0.95)';
+  ctx.shadowBlur  = 28;
+  ctx.fillText('LIFE OBTAINED', cx, my - 46);
+
+  // Line 2: unit : space
+  ctx.font        = '21px "Space Mono", monospace';
+  ctx.fillStyle   = 'rgba(140,235,255,0.92)';
+  ctx.shadowBlur  = 14;
+  ctx.fillText('unit : space', cx, my + 8);
+
+  // Line 3: press anywhere to restart (lower opacity)
+  ctx.font        = '13px "Space Mono", monospace';
+  ctx.fillStyle   = 'rgba(100,185,205,0.62)';
+  ctx.shadowBlur  = 0;
+  ctx.fillText('press anywhere to restart', cx, my + 50);
+
+  ctx.restore();
+}
+
+// --- Main render ---
+function render(t) {
+  ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+
+  drawBackground(t);
+  drawGlassPanels(t);
+  drawMist(t);
+  drawFloor(t);
+
+  // Draw portals
+  const room = ROOMS[state.currentRoom];
+  for (const p of room.portals) {
+    drawPortal(p, t);
+  }
+
+  // Character (hidden during victory screen fade)
+  if (state.phase !== STATE.VICTORY || state.victoryAlpha < 0.85) {
+    const charAlpha = (state.phase === STATE.VICTORY) ? 1 - state.victoryAlpha : 1;
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, charAlpha);
+    drawCharacter(t);
+    ctx.restore();
+  }
+
+  // Orb (fade out during victory)
+  if (state.currentRoom === 5) {
+    const orbAlpha = (state.phase === STATE.VICTORY) ? Math.max(0, 1 - state.victoryAlpha * 1.5) : 1;
+    ctx.save();
+    ctx.globalAlpha = orbAlpha;
+    drawOrb(t);
+    ctx.restore();
+  }
+
+  drawFade();
+  drawVictory(t);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GAME LOOP
+// ─────────────────────────────────────────────────────────────────────────────
+function gameLoop(ts) {
+  if (state.lastTimestamp === 0) state.lastTimestamp = ts;
+  let dt = ts - state.lastTimestamp;
+  dt = Math.min(dt, 50); // cap to prevent physics explosions on tab blur
+  state.lastTimestamp = ts;
+
+  update(dt);
+  render(state.totalElapsed);
+
+  requestAnimationFrame(gameLoop);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INIT / RESTART
+// ─────────────────────────────────────────────────────────────────────────────
+function restartGame() {
+  state.phase          = STATE.PLAYING;
+  state.currentRoom    = 0;
+  state.victoryAlpha   = 0;
+  state.orbTouched     = false;
+  state.orbHue         = 0;
+  state.keys           = { left: false, right: false };
+  state.fade           = {
+    active: false, alpha: 0, direction: 'out', elapsed: 0,
+    halfDuration: FADE_HALF_MS,
+    pendingRoom: null, pendingSpawnType: null, pendingSpawnX: null
+  };
+  spawnCharacter(0, 'floor_left', 140);
+}
+
+function initGame() {
+  state = makeInitialState();
+  spawnCharacter(0, 'floor_left', 140);
+  state.phase = STATE.PLAYING;
+  requestAnimationFrame(gameLoop);
+}
+
+// Start loading
+// (image onload handlers call initGame when all 4 are ready)
+// Fallback: if images load synchronously or from cache
+if (loadedCount === IMAGES.length) initGame();
+</script>
+</body>
+</html>
