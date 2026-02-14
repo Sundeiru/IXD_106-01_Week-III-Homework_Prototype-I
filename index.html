@@ -43,6 +43,7 @@ const GRAVITY    = 0.52;
 const WALK_SPEED = 3.2;
 
 const FADE_HALF_MS = 200;
+const PORTAL_SPAWN_OFFSET = 80; // px gap between CircChar and portal edge on wall-emerge spawn
 
 const VICTORY_LINE1_MS  = [0,    800];   // "LIFE OBTAINED"
 const VICTORY_LINE2_MS  = [500,  1300];  // "unit : space"
@@ -259,8 +260,8 @@ function spawnCharacter(roomId, spawnType, spawnX) {
       break;
 
     case 'wall_left_emerge':
-      // emerges from left wall, walks right
-      char.x = spawnX;
+      // emerges from left wall, walks right — offset away from portal
+      char.x = spawnX + PORTAL_SPAWN_OFFSET;
       char.y = FLOOR_Y - ch;
       char.facingRight = true;
       char.onGround    = true;
@@ -269,8 +270,8 @@ function spawnCharacter(roomId, spawnType, spawnX) {
       break;
 
     case 'wall_right_emerge':
-      // emerges from right wall, faces left
-      char.x = spawnX - cw;
+      // emerges from right wall, faces left — offset away from portal
+      char.x = spawnX - cw - PORTAL_SPAWN_OFFSET;
       char.y = FLOOR_Y - ch;
       char.facingRight = false;
       char.onGround    = true;
