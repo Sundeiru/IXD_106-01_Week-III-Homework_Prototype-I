@@ -54,6 +54,38 @@ const VICTORY_UNLOCK_MS = 2400;          // earliest moment restart is accepted
 const WALK_CYCLE     = [1, 2, 3, 2];
 const WALK_CYCLE_DUR = [120, 110, 110, 110]; // ms per frame
 
+// Orb colour palette — jewel tones that transition without muddy or clashing intermediates
+// [hue, saturation%, lightness%]
+const ORB_PALETTE = [
+  [185, 100, 65],  // electric cyan
+  [220, 100, 70],  // periwinkle blue
+  [265, 100, 72],  // soft violet
+  [305, 100, 68],  // hot magenta
+  [335, 100, 65],  // deep rose
+  [ 15, 100, 65],  // coral
+  [ 45, 100, 60],  // bright amber
+  [145, 100, 58],  // emerald
+];
+const ORB_CYCLE_MS = 9000; // ms for one full palette loop
+
+function getOrbColor(t) {
+  const n   = ORB_PALETTE.length;
+  const f   = (t % ORB_CYCLE_MS) / ORB_CYCLE_MS * n;
+  const i   = Math.floor(f) % n;
+  const j   = (i + 1) % n;
+  const raw = f - Math.floor(f);
+  const e   = raw * raw * (3 - 2 * raw); // smoothstep easing
+  const a   = ORB_PALETTE[i], b = ORB_PALETTE[j];
+  let dh    = b[0] - a[0];
+  if (dh >  180) dh -= 360;  // always take the short arc
+  if (dh < -180) dh += 360;
+  return {
+    h: (a[0] + dh * e + 360) % 360,
+    s: a[1] + (b[1] - a[1]) * e,
+    l: a[2] + (b[2] - a[2]) * e,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // STATE ENUM
 // ─────────────────────────────────────────────────────────────────────────────
@@ -200,7 +232,6 @@ function makeInitialState() {
     victoryElapsed: 0,
     orbTouched: false,
     portalCooldown: 0,
-    orbHue: 0,
     lastTimestamp: 0,
     totalElapsed: 0
   };
@@ -395,9 +426,7 @@ function checkOrbCollision() {
 // UPDATE
 // ─────────────────────────────────────────────────────────────────────────────
 function update(dt) {
-  // Always cycle orb hue and elapsed
   state.totalElapsed += dt;
-  state.orbHue = (state.orbHue + dt * 0.035) % 360;
 
   if (state.phase === STATE.FADING) {
     updateFade(dt);
@@ -750,37 +779,38 @@ function drawCharacter(t) {
 function drawOrb(t) {
   const room = ROOMS[state.currentRoom];
   if (!room.orb || state.orbTouched) return;
-  const orb   = room.orb;
-  const cx    = orb.x;
-  const cy    = orb.baseY + Math.sin(t * orb.floatFreq) * orb.floatAmp;
-  const r     = orb.r;
-  const hue   = state.orbHue;
+  const orb = room.orb;
+  const cx  = orb.x;
+  const cy  = orb.baseY + Math.sin(t * orb.floatFreq) * orb.floatAmp;
+  const r   = orb.r;
+  const { h, s, l } = getOrbColor(t);
 
-  // Outer ambient glow
   ctx.save();
+
+  // Outer ambient glow — same hue, large and soft
   const ag = ctx.createRadialGradient(cx, cy, r * 0.4, cx, cy, r * 2.8);
-  ag.addColorStop(0,   `hsla(${hue},90%,68%,0.32)`);
-  ag.addColorStop(0.6, `hsla(${hue},80%,55%,0.12)`);
-  ag.addColorStop(1,   `hsla(${hue},70%,50%,0)`);
+  ag.addColorStop(0,   `hsla(${h},${s}%,${l}%,0.35)`);
+  ag.addColorStop(0.6, `hsla(${h},${s}%,${l}%,0.12)`);
+  ag.addColorStop(1,   `hsla(${h},${s}%,${l}%,0)`);
   ctx.fillStyle = ag;
   ctx.beginPath(); ctx.arc(cx, cy, r * 2.8, 0, Math.PI * 2); ctx.fill();
 
-  // Sphere gradient
+  // Sphere — monochromatic shading: highlight → full colour → deep shadow (same hue)
   const hx = cx - r * 0.28;
   const hy = cy - r * 0.32;
   const sg = ctx.createRadialGradient(hx, hy, r * 0.04, cx, cy, r);
-  sg.addColorStop(0,    `hsla(${(hue+40)%360},100%,96%,1)`);
-  sg.addColorStop(0.32, `hsla(${hue},90%,72%,1)`);
-  sg.addColorStop(0.70, `hsla(${(hue+200)%360},70%,38%,1)`);
-  sg.addColorStop(1,    `hsla(${(hue+180)%360},60%,18%,1)`);
-  ctx.fillStyle = sg;
-  ctx.shadowColor = `hsla(${hue},90%,65%,0.9)`;
-  ctx.shadowBlur  = 22;
+  sg.addColorStop(0,    `hsla(${(h+25)%360},${s}%,92%,1)`);               // warm near-white highlight
+  sg.addColorStop(0.28, `hsla(${h},${s}%,${l}%,1)`);                      // full palette colour
+  sg.addColorStop(0.68, `hsla(${h},${s}%,${Math.max(l-28,15)}%,1)`);      // darker same hue
+  sg.addColorStop(1,    `hsla(${h},${s}%,${Math.max(l-46, 8)}%,1)`);      // deep shadow same hue
+  ctx.fillStyle   = sg;
+  ctx.shadowColor = `hsla(${h},${s}%,${l}%,0.9)`;
+  ctx.shadowBlur  = 24;
   ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
   ctx.shadowBlur  = 0;
 
-  // Specular highlight
-  ctx.fillStyle = 'rgba(255,255,255,0.62)';
+  // Specular highlight dot
+  ctx.fillStyle = 'rgba(255,255,255,0.65)';
   ctx.beginPath(); ctx.arc(hx, hy, r * 0.17, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 }
@@ -915,7 +945,6 @@ function restartGame() {
   state.victoryElapsed = 0;
   state.orbTouched     = false;
   state.portalCooldown = 0;
-  state.orbHue         = 0;
   state.keys           = { left: false, right: false };
   state.fade           = {
     active: false, alpha: 0, direction: 'out', elapsed: 0,
