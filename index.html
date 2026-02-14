@@ -44,6 +44,11 @@ const WALK_SPEED = 3.2;
 
 const FADE_HALF_MS = 200;
 
+const VICTORY_LINE1_MS  = [0,    800];   // "LIFE OBTAINED"
+const VICTORY_LINE2_MS  = [500,  1300];  // "unit : space"
+const VICTORY_LINE3_MS  = [1600, 2400];  // "press anywhere to restart"
+const VICTORY_UNLOCK_MS = 2400;          // earliest moment restart is accepted
+
 // Walk animation cycle: indices into IMAGES array [Default=0, WalkI=1, WalkTrans=2, WalkII=3]
 const WALK_CYCLE     = [1, 2, 3, 2];
 const WALK_CYCLE_DUR = [120, 110, 110, 110]; // ms per frame
@@ -191,8 +196,9 @@ function makeInitialState() {
       halfDuration: FADE_HALF_MS,
       pendingRoom: null, pendingSpawnType: null, pendingSpawnX: null
     },
-    victoryAlpha: 0,
+    victoryElapsed: 0,
     orbTouched: false,
+    portalCooldown: 0,
     orbHue: 0,
     lastTimestamp: 0,
     totalElapsed: 0
@@ -203,17 +209,19 @@ function makeInitialState() {
 // INPUT
 // ─────────────────────────────────────────────────────────────────────────────
 window.addEventListener('keydown', e => {
-  if (e.key === 'ArrowLeft')  state.keys.left  = true;
-  if (e.key === 'ArrowRight') state.keys.right = true;
+  if (state.phase !== STATE.VICTORY) {
+    if (e.key === 'ArrowLeft')  state.keys.left  = true;
+    if (e.key === 'ArrowRight') state.keys.right = true;
+  }
   if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) e.preventDefault();
-  if (state.phase === STATE.VICTORY) restartGame();
+  if (state.phase === STATE.VICTORY && state.victoryElapsed >= VICTORY_UNLOCK_MS) restartGame();
 });
 window.addEventListener('keyup', e => {
   if (e.key === 'ArrowLeft')  state.keys.left  = false;
   if (e.key === 'ArrowRight') state.keys.right = false;
 });
 canvas.addEventListener('click', () => {
-  if (state.phase === STATE.VICTORY) restartGame();
+  if (state.phase === STATE.VICTORY && state.victoryElapsed >= VICTORY_UNLOCK_MS) restartGame();
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -256,6 +264,7 @@ function spawnCharacter(roomId, spawnType, spawnX) {
       char.y = FLOOR_Y - ch;
       char.facingRight = true;
       char.onGround    = true;
+      state.portalCooldown = 600;
       state.phase = STATE.PLAYING;
       break;
 
@@ -265,6 +274,7 @@ function spawnCharacter(roomId, spawnType, spawnX) {
       char.y = FLOOR_Y - ch;
       char.facingRight = false;
       char.onGround    = true;
+      state.portalCooldown = 600;
       state.phase = STATE.PLAYING;
       break;
   }
@@ -374,9 +384,9 @@ function checkOrbCollision() {
   const dy    = cCY - orbCY;
   const dist  = Math.sqrt(dx * dx + dy * dy);
   if (dist < orb.r + cw * 0.45) {
-    state.orbTouched  = true;
-    state.phase       = STATE.VICTORY;
-    state.victoryAlpha = 0;
+    state.orbTouched     = true;
+    state.phase          = STATE.VICTORY;
+    state.victoryElapsed = 0;
   }
 }
 
@@ -394,7 +404,7 @@ function update(dt) {
   }
 
   if (state.phase === STATE.VICTORY) {
-    state.victoryAlpha = Math.min(1, state.victoryAlpha + dt / 700);
+    state.victoryElapsed = Math.min(state.victoryElapsed + dt, VICTORY_UNLOCK_MS + 200);
     return;
   }
 
@@ -446,7 +456,8 @@ function update(dt) {
 
   // Portal + orb checks (only while playing, on ground)
   if (state.phase === STATE.PLAYING) {
-    checkPortalCollisions();
+    if (state.portalCooldown > 0) state.portalCooldown -= dt;
+    else checkPortalCollisions();
     if (state.currentRoom === 5) checkOrbCollision();
   }
 }
@@ -781,39 +792,57 @@ function drawFade() {
 }
 
 // --- Victory screen ---
+function ramp(elapsed, startMs, endMs) {
+  if (elapsed <= startMs) return 0;
+  if (elapsed >= endMs)   return 1;
+  return (elapsed - startMs) / (endMs - startMs);
+}
+
 function drawVictory(t) {
   if (state.phase !== STATE.VICTORY) return;
-  const a  = state.victoryAlpha;
+  const e  = state.victoryElapsed;
   const cx = CANVAS_W / 2;
   const my = CANVAS_H / 2;
 
-  // Dark overlay
-  ctx.fillStyle = `rgba(0,0,0,${a * 0.84})`;
+  // Dark overlay — fades to 0.84 over first 600ms
+  const overlayA = Math.min(1, e / 600) * 0.84;
+  ctx.fillStyle  = `rgba(0,0,0,${overlayA})`;
   ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
   ctx.save();
-  ctx.globalAlpha = a;
-  ctx.textAlign   = 'center';
-  ctx.textBaseline= 'middle';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
 
   // Line 1: LIFE OBTAINED
-  ctx.font        = 'bold 44px "Space Mono", monospace';
-  ctx.fillStyle   = '#e8f8ff';
-  ctx.shadowColor = 'rgba(0,210,255,0.95)';
-  ctx.shadowBlur  = 28;
-  ctx.fillText('LIFE OBTAINED', cx, my - 46);
+  const a1 = ramp(e, ...VICTORY_LINE1_MS);
+  if (a1 > 0) {
+    ctx.globalAlpha = a1;
+    ctx.font        = 'bold 44px "Space Mono", monospace';
+    ctx.fillStyle   = '#e8f8ff';
+    ctx.shadowColor = 'rgba(0,210,255,0.95)';
+    ctx.shadowBlur  = 28;
+    ctx.fillText('LIFE OBTAINED', cx, my - 46);
+  }
 
   // Line 2: unit : space
-  ctx.font        = '21px "Space Mono", monospace';
-  ctx.fillStyle   = 'rgba(140,235,255,0.92)';
-  ctx.shadowBlur  = 14;
-  ctx.fillText('unit : space', cx, my + 8);
+  const a2 = ramp(e, ...VICTORY_LINE2_MS);
+  if (a2 > 0) {
+    ctx.globalAlpha = a2 * 0.92;
+    ctx.font        = '21px "Space Mono", monospace';
+    ctx.fillStyle   = 'rgba(140,235,255,1)';
+    ctx.shadowBlur  = 14;
+    ctx.fillText('unit : space', cx, my + 8);
+  }
 
-  // Line 3: press anywhere to restart (lower opacity)
-  ctx.font        = '13px "Space Mono", monospace';
-  ctx.fillStyle   = 'rgba(100,185,205,0.62)';
-  ctx.shadowBlur  = 0;
-  ctx.fillText('press anywhere to restart', cx, my + 50);
+  // Line 3: press anywhere to restart — appears last, lower opacity
+  const a3 = ramp(e, ...VICTORY_LINE3_MS);
+  if (a3 > 0) {
+    ctx.globalAlpha = a3 * 0.62;
+    ctx.font        = '13px "Space Mono", monospace';
+    ctx.fillStyle   = 'rgba(100,185,205,1)';
+    ctx.shadowBlur  = 0;
+    ctx.fillText('press anywhere to restart', cx, my + 50);
+  }
 
   ctx.restore();
 }
@@ -833,22 +862,28 @@ function render(t) {
     drawPortal(p, t);
   }
 
-  // Character (hidden during victory screen fade)
-  if (state.phase !== STATE.VICTORY || state.victoryAlpha < 0.85) {
-    const charAlpha = (state.phase === STATE.VICTORY) ? 1 - state.victoryAlpha : 1;
+  // Character (fades out over first 800ms of victory)
+  const charAlpha = (state.phase === STATE.VICTORY)
+    ? Math.max(0, 1 - state.victoryElapsed / 800)
+    : 1;
+  if (charAlpha > 0) {
     ctx.save();
-    ctx.globalAlpha = Math.max(0, charAlpha);
+    ctx.globalAlpha = charAlpha;
     drawCharacter(t);
     ctx.restore();
   }
 
-  // Orb (fade out during victory)
+  // Orb (fades out over first 500ms of victory)
   if (state.currentRoom === 5) {
-    const orbAlpha = (state.phase === STATE.VICTORY) ? Math.max(0, 1 - state.victoryAlpha * 1.5) : 1;
-    ctx.save();
-    ctx.globalAlpha = orbAlpha;
-    drawOrb(t);
-    ctx.restore();
+    const orbAlpha = (state.phase === STATE.VICTORY)
+      ? Math.max(0, 1 - state.victoryElapsed / 500)
+      : 1;
+    if (orbAlpha > 0) {
+      ctx.save();
+      ctx.globalAlpha = orbAlpha;
+      drawOrb(t);
+      ctx.restore();
+    }
   }
 
   drawFade();
@@ -876,8 +911,9 @@ function gameLoop(ts) {
 function restartGame() {
   state.phase          = STATE.PLAYING;
   state.currentRoom    = 0;
-  state.victoryAlpha   = 0;
+  state.victoryElapsed = 0;
   state.orbTouched     = false;
+  state.portalCooldown = 0;
   state.orbHue         = 0;
   state.keys           = { left: false, right: false };
   state.fade           = {
